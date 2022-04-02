@@ -10,6 +10,7 @@
 - **Pubmed** and **Reddit** datasets are available in the latest version of [DGL](https://github.com/dmlc/dgl).
 - **DBLP**: Extract the text file from [SNAP](https://snap.stanford.edu/data/com-DBLP.html)
 - **Amazon**: Extract the text file from [SNAP](https://snap.stanford.edu/data/amazon0505.html)
+
 All dataset needs to be put in the 'Dataset' folder, which may be created by ogb.
 ## Configuration
 The CUDA source is compiled at runtime by Pytorch. The compile options are set in **cuda/kernels.py**.
