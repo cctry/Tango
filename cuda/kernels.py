@@ -3,9 +3,7 @@ from torch.utils.cpp_extension import load
 from dgl.sparse import infer_broadcast_shape
 import os
 
-os.environ['CUDA_HOME'] = '/usr/local/cuda'
-
-CUTLASS_PATH = '/home/CAMPUS/schen94/storage/cutlass'
+CUTLASS_PATH = '/workspace/cutlass'
 
 path = __file__.replace('kernels.py', 'src/')
 
