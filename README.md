@@ -3,6 +3,7 @@
 > docker build -t tango
 > docker run -it tango
 ## Results reproduce
+The scripts used for evaluation are in the directory 'evaluation'.
 ### Model speedup
  - GCN: python3 test_gcn.py --dataset=reddit
  - GAT: python3 test_gat.py --dataset=reddit
