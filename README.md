@@ -11,6 +11,9 @@ The scripts used for evaluation are in the directory 'evaluation'.
 - SPMM: python3 SPMM_broadcast.py|SPMM_nobroadcast.py
 - SDDMM: python3 SDDMM_test.py
 - GEMM: python3 linear_test.py
+### Tested hardware
+- GPU: NVIDIA V100S
+- CPU: Intel(R) Xeon(R) Gold 6244 @ 3.60GHz
 ## Software requirements
 - [DGL](https://github.com/dmlc/dgl) compiled from source with CUDA support
 - [CUTLASS](https://github.com/NVIDIA/cutlass) 
