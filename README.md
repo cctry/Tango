@@ -4,10 +4,10 @@
 > docker run -it tango
 ## Results reproduce
 The scripts used for evaluation are in the directory 'evaluation'.
-### Model speedup
+### Model speedup (Fig. 8)
  - GCN: python3 test_gcn.py --dataset=reddit
  - GAT: python3 test_gat.py --dataset=reddit
-### Primitive speedup
+### Primitive speedup (Fig. 13-15)
 - SPMM: python3 SPMM_broadcast.py|SPMM_nobroadcast.py
 - SDDMM: python3 SDDMM_test.py
 - GEMM: python3 linear_test.py
