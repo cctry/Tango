@@ -2,7 +2,15 @@
 ## Run docker
 > docker build -t tango
 > docker run -it tango
-## Softward requirements
+## Results reproduce
+### Model speedup
+ - GCN: python3 test_gcn.py --dataset=reddit
+ - GAT: python3 test_gat.py --dataset=reddit
+### Primitive speedup
+- SPMM: python3 SPMM_broadcast.py|SPMM_nobroadcast.py
+- SDDMM: python3 SDDMM_test.py
+- GEMM: python3 linear_test.py
+## Software requirements
 - [DGL](https://github.com/dmlc/dgl) compiled from source with CUDA support
 - [CUTLASS](https://github.com/NVIDIA/cutlass) 
 - Pytorch 1.10.0
