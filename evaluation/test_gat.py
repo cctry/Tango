@@ -1,5 +1,6 @@
 import argparse
 from logging import exception
+import math
 import sys
 import numpy as np
 import time
@@ -13,6 +14,7 @@ from dgl.ops import edge_softmax
 import torch.nn as nn
 import dgl.function as fn
 from dgl.nn import GraphConv, GATConv
+from util import *
 
 sys.path.append('../')
 from cuda.util import graph_preprocess
@@ -233,70 +235,17 @@ def evaluate(model, features, labels, mask):
 
 def main(args):
     # load and preprocess dataset
-    if args.dataset == 'reddit':
-        data = RedditDataset()
-        g = data[0].to('cuda')
-        n_classes = data.num_labels
-    elif args.dataset == 'pubmed':
-        data = PubmedGraphDataset()
-        g = data[0]
-        # g = dgl.to_bidirected(g)
-        g = g.to('cuda')
-        n_classes = data.num_labels
-    elif args.dataset == "dblp":
-        out = np.loadtxt('dataset/com-dblp.ungraph.txt', skiprows=4, unpack=True, dtype=np.int64)
-        g = dgl.graph((out[0], out[1]))
-        g = dgl.to_bidirected(g)
-        g.ndata['feat'] = torch.rand(g.num_nodes(), 128)
-        n_classes = 32
-        g.ndata['label'] = torch.randint(n_classes, (g.num_nodes(),))
-        shuffle = np.random.permutation(g.num_nodes())
-        train_idx = shuffle[:int(g.num_nodes() * 0.8)]
-        val_idx = shuffle[int(g.num_nodes() * 0.8):]
-        test_idx = shuffle[int(g.num_nodes() * 0.8):]
-        train_mask = torch.zeros(g.num_nodes(), dtype=torch.bool)
-        train_mask[train_idx] = True  
-        val_mask = torch.zeros(g.num_nodes(), dtype=torch.bool)
-        val_mask[val_idx] = True
-        test_mask = torch.zeros(g.num_nodes(), dtype=torch.bool)
-        test_mask[test_idx] = True
-        g.ndata['train_mask'] = train_mask
-        g.ndata['val_mask'] = val_mask
-        g.ndata['test_mask'] = test_mask
-        g = g.to('cuda')
-    elif args.dataset == "amazon":
-        out = np.loadtxt('dataset/amazon0505.txt', skiprows=4, unpack=True, dtype=np.int64)
-        g = dgl.graph((out[0], out[1]))
-        g = dgl.to_bidirected(g)
-        g.ndata['feat'] = torch.rand(g.num_nodes(), 128)
-        n_classes = 32
-        g.ndata['label'] = torch.randint(n_classes, (g.num_nodes(),))
-        shuffle = np.random.permutation(g.num_nodes())
-        train_idx = shuffle[:int(g.num_nodes() * 0.8)]
-        val_idx = shuffle[int(g.num_nodes() * 0.8):]
-        test_idx = shuffle[int(g.num_nodes() * 0.8):]
-        train_mask = torch.zeros(g.num_nodes(), dtype=torch.bool)
-        train_mask[train_idx] = True  
-        val_mask = torch.zeros(g.num_nodes(), dtype=torch.bool)
-        val_mask[val_idx] = True
-        test_mask = torch.zeros(g.num_nodes(), dtype=torch.bool)
-        test_mask[test_idx] = True
-        g.ndata['train_mask'] = train_mask
-        g.ndata['val_mask'] = val_mask
-        g.ndata['test_mask'] = test_mask
-        g = g.to('cuda')
-    else:
-        raise ValueError('Unknown dataset: {}'.format(args.dataset))
+    g = load_graph_train(args.dataset)
     cuda = True
 
     features = g.ndata['feat']
     # trim features to fit in k%4
     size = features.shape[1] - (features.shape[1] % 4)
     features = features[:, :size]
-    labels = g.ndata['label']
-    train_mask = g.ndata['train_mask']
-    val_mask = g.ndata['val_mask']
-    test_mask = g.ndata['test_mask']
+    labels = g.ndata.pop('label')
+    train_mask = g.ndata.pop('train_mask')
+    val_mask = g.ndata.pop('val_mask')
+    test_mask = g.ndata.pop('test_mask')
     num_feats = features.shape[1]
 
     # add self loop
@@ -311,7 +260,7 @@ def main(args):
                 args.num_layers,
                 num_feats,
                 args.num_hidden,
-                n_classes,
+                g.n_classes,
                 heads,
                 F.elu,
                 args.in_drop,
@@ -320,7 +269,7 @@ def main(args):
                 args.residual,
                 args.quant)
     proj_layer = nn.Linear(
-        args.num_hidden, n_classes).cuda()  # proj to predict
+        args.num_hidden, g.n_classes).cuda()  # proj to predict
     print(model)
     if cuda:
         model.cuda()
@@ -331,8 +280,9 @@ def main(args):
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     # initialize graph
-    elapsed = 0
+    epsilon = 1 - math.log(2)
     dur = []
+    f = open(args.filename, 'w+')
     for epoch in range(args.epochs):
         model.train()
         # forward
@@ -343,40 +293,50 @@ def main(args):
         logits = model(features)
         forward.record()
         logits = proj_layer(logits)
-        loss = loss_fcn(logits[train_mask], labels[train_mask])
+        torch.cuda.synchronize()
+        def cross_entropy(x, labels):
+            y = F.cross_entropy(x, labels[:, 0], reduction="none")
+            y = torch.log(epsilon + y) - math.log(epsilon)
+            return torch.mean(y)
+
+        if args.dataset == 'ogbn-arxiv':
+            loss = cross_entropy(logits[train_mask], labels[train_mask])
+        else:
+            loss = F.cross_entropy(logits[train_mask], labels[train_mask])
 
         optimizer.zero_grad()
         backward.record()
         loss.backward()
-        torch.cuda.synchronize()
+
         elapsed = start.elapsed_time(forward) + forward.elapsed_time(backward)
         optimizer.step()
 
         if epoch >= 3:
             dur.append(elapsed)
 
-        train_acc = accuracy(logits[train_mask], labels[train_mask])
+        # train_acc = accuracy(logits[train_mask], labels[train_mask])
 
-        if args.fastmode:
-            val_acc = accuracy(logits[val_mask], labels[val_mask])
-        else:
-            val_acc = evaluate(model, features, labels, val_mask)
-
-        print("Epoch {:05d} | Time(ms) {:.4f} | Loss {:.4f} | TrainAcc {:.4f} |"
-              " ValAcc {:.4f} | ETputs(KTEPS) {:.2f}".
-              format(epoch, np.mean(dur), loss.item(), train_acc,
-                     val_acc, n_edges / np.mean(dur) / 1000))
+        # if args.fastmode:
+        #     val_acc = accuracy(logits[val_mask], labels[val_mask])
+        # else:
+        #     val_acc = evaluate(model, features, labels, val_mask)
+        f.write(elapsed.__str__() + '\n')
+        # print("Epoch {:05d} | Time(ms) {:.4f} | Loss {:.4f} | TrainAcc {:.4f} |"
+        #       " ValAcc {:.4f} | ETputs(KTEPS) {:.2f}".
+        #       format(epoch, np.mean(dur), loss.item(), train_acc,
+        #              val_acc, n_edges / np.mean(dur) / 1000))
 
     print()
     acc = evaluate(model, features, labels, test_mask)
     print("Test Accuracy {:.4f}".format(acc))
+    f.close()
 
 
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='GAT')
     register_data_args(parser)
-    parser.add_argument("--epochs", type=int, default=200,
+    parser.add_argument("--epochs", type=int, default=1000,
                         help="number of training epochs")
     parser.add_argument("--num-heads", type=int, default=4,
                         help="number of hidden attention heads")
@@ -402,6 +362,7 @@ if __name__ == '__main__':
                         help="skip re-evaluate the validation set")
     parser.add_argument('--quant', action="store_true", default=False,
                         help="use QGAT")
+    parser.add_argument('--filename', type=str, default='time.txt')
     args = parser.parse_args()
     print(args)
 

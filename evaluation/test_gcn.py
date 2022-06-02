@@ -1,4 +1,5 @@
 import argparse
+import math
 from operator import mod
 import sys
 import numpy as np
@@ -13,6 +14,7 @@ from dgl.ops import edge_softmax
 import torch.nn as nn
 import dgl.function as fn
 from dgl.nn import GATConv, GraphConv
+from util import *
 
 sys.path.append('../')
 from cuda.util import graph_preprocess
@@ -183,67 +185,14 @@ def evaluate(model, features, labels, mask):
 
 def main(args):
     # load and preprocess dataset
-    if args.dataset == 'reddit':
-        data = RedditDataset()
-        g = data[0].to('cuda')
-        n_classes = data.num_labels
-    elif args.dataset == 'pubmed':
-        data = PubmedGraphDataset()
-        g = data[0]
-        # g = dgl.to_bidirected(g)
-        g = g.to('cuda')
-        n_classes = data.num_labels
-    elif args.dataset == "dblp":
-        out = np.loadtxt('dataset/com-dblp.ungraph.txt', skiprows=4, unpack=True, dtype=np.int64)
-        g = dgl.graph((out[0], out[1]))
-        g = dgl.to_bidirected(g)
-        g.ndata['feat'] = torch.rand(g.num_nodes(), 128)
-        n_classes = 32
-        g.ndata['label'] = torch.randint(n_classes, (g.num_nodes(),))
-        shuffle = np.random.permutation(g.num_nodes())
-        train_idx = shuffle[:int(g.num_nodes() * 0.8)]
-        val_idx = shuffle[int(g.num_nodes() * 0.8):]
-        test_idx = shuffle[int(g.num_nodes() * 0.8):]
-        train_mask = torch.zeros(g.num_nodes(), dtype=torch.bool)
-        train_mask[train_idx] = True  
-        val_mask = torch.zeros(g.num_nodes(), dtype=torch.bool)
-        val_mask[val_idx] = True
-        test_mask = torch.zeros(g.num_nodes(), dtype=torch.bool)
-        test_mask[test_idx] = True
-        g.ndata['train_mask'] = train_mask
-        g.ndata['val_mask'] = val_mask
-        g.ndata['test_mask'] = test_mask
-        g = g.to('cuda')
-    elif args.dataset == "amazon":
-        out = np.loadtxt('dataset/amazon0505.txt', skiprows=4, unpack=True, dtype=np.int64)
-        g = dgl.graph((out[0], out[1]))
-        g = dgl.to_bidirected(g)
-        g.ndata['feat'] = torch.rand(g.num_nodes(), 128)
-        n_classes = 32
-        g.ndata['label'] = torch.randint(n_classes, (g.num_nodes(),))
-        shuffle = np.random.permutation(g.num_nodes())
-        train_idx = shuffle[:int(g.num_nodes() * 0.8)]
-        val_idx = shuffle[int(g.num_nodes() * 0.8):]
-        test_idx = shuffle[int(g.num_nodes() * 0.8):]
-        train_mask = torch.zeros(g.num_nodes(), dtype=torch.bool)
-        train_mask[train_idx] = True  
-        val_mask = torch.zeros(g.num_nodes(), dtype=torch.bool)
-        val_mask[val_idx] = True
-        test_mask = torch.zeros(g.num_nodes(), dtype=torch.bool)
-        test_mask[test_idx] = True
-        g.ndata['train_mask'] = train_mask
-        g.ndata['val_mask'] = val_mask
-        g.ndata['test_mask'] = test_mask
-        g = g.to('cuda')
-    else:
-        raise ValueError('Unknown dataset: {}'.format(args.dataset))
+    g = load_graph_train(args.dataset)
     graph_preprocess(g)
     cuda = True
     print(g)
     features = g.ndata['feat']
     # trim features to fit in k%4
     size = features.shape[1] - (features.shape[1] % 4)
-    features = features[:, :size]
+    # features = features[:, :size]
     labels = g.ndata['label']
     train_mask = g.ndata['train_mask']
     val_mask = g.ndata['val_mask']
@@ -275,16 +224,17 @@ def main(args):
     print(model)
     if cuda:
         model.cuda()
-    loss_fcn = torch.nn.CrossEntropyLoss()
-    proj_layer = nn.Linear(args.n_hidden, n_classes).cuda()  # proj to predict
+
+    proj_layer = nn.Linear(args.n_hidden, g.n_classes).cuda()  # proj to predict
 
     # use optimizer
     optimizer = torch.optim.Adam(model.parameters(),
                                  lr=args.lr,
                                  weight_decay=args.weight_decay)
-
+    epsilon = 1 - math.log(2)
     # initialize graph
     dur = []
+    f = open(args.filename, 'w+')
     for epoch in range(args.n_epochs):
         model.train()
         # forward
@@ -295,7 +245,16 @@ def main(args):
         logits = model(features)
         forward.record()
         logits = proj_layer(logits)
-        loss = loss_fcn(logits[train_mask], labels[train_mask])
+
+        def cross_entropy(x, labels):
+            y = F.cross_entropy(x, labels[:, 0], reduction="none")
+            y = torch.log(epsilon + y) - math.log(epsilon)
+            return torch.mean(y)
+
+        if args.dataset == 'ogbn-arxiv':
+            loss = cross_entropy(logits[train_mask], labels[train_mask])
+        else:
+            loss = F.cross_entropy(logits[train_mask], labels[train_mask])
 
         optimizer.zero_grad()
         backward.record()
@@ -306,12 +265,12 @@ def main(args):
 
         if epoch >= 3:
             dur.append(elapsed)
-
+        f.write(elapsed.__str__() + '\n')
         acc = evaluate(model, features, labels, val_mask)
         print("Epoch {:05d} | Time(s) {:.4f} | Loss {:.4f} | Accuracy {:.4f} | "
               "ETputs(KTEPS) {:.2f}". format(epoch, np.mean(dur), loss.item(),
                                              acc, n_edges / np.mean(dur) / 1000))
-
+    f.close()
     print()
     acc = evaluate(model, features, labels, test_mask)
     print("Test accuracy {:.2%}".format(acc))
@@ -325,7 +284,7 @@ if __name__ == '__main__':
                         help="dropout probability")
     parser.add_argument("--lr", type=float, default=1e-2,
                         help="learning rate")
-    parser.add_argument("--n-epochs", type=int, default=200,
+    parser.add_argument("--n-epochs", type=int, default=1000,
                         help="number of training epochs")
     parser.add_argument("--n-hidden", type=int, default=256,
                         help="number of hidden gcn units")
@@ -335,6 +294,7 @@ if __name__ == '__main__':
                         help="Weight for L2 loss")
     parser.add_argument('--quant', action="store_true", default=False,
                         help="use QGCN")
+    parser.add_argument('--filename', type=str, default='time.txt')
     parser.set_defaults(self_loop=False)
     args = parser.parse_args()
     print(args)
