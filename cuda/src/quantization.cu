@@ -60,7 +60,7 @@ __global__ void kernel_get_scale(float *__restrict__ out,
   if (remain > 0 && tid < remain) {
     res = max(res, fabs(in[size4 * 4 + tid + 1]));
   }
-  scale_reduce2(res / 127.0f, out);
+  scale_reduce(res / 127.0f, out);
 }
 
 __global__ void kernel_get_scale_float1(float *__restrict__ out,
@@ -73,7 +73,7 @@ __global__ void kernel_get_scale_float1(float *__restrict__ out,
     float temp = in[i];
     res = max(res, fabs(temp));
   }
-  scale_reduce2(res / 127.0f, out);
+  scale_reduce(res / 127.0f, out);
 }
 
 torch::Tensor get_scale_impl(torch::Tensor &in) {
